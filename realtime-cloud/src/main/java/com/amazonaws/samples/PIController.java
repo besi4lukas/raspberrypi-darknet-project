@@ -1,4 +1,4 @@
-package com.amazonaws.samples;
+package com.amazonaws.process;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -36,6 +36,62 @@ import java.lang.reflect.Modifier;
 
 
 public class PIController {
+	
+	//main function runs the application
+	public static void main(String[] args) throws IOException {
+		// Set required parameters
+		Regions clientRegion = Regions.US_EAST_1;
+		String inputBucketName = "cse546input";
+		String outputBucketName = "cse546output";
+		String myQueueUrl = "https://sqs.us-east-1.amazonaws.com/603754723521/Test";
+		
+		final AmazonEC2 ec2 = AmazonEC2ClientBuilder.standard().withRegion(clientRegion).build();
+		// Create SQS and S3 Client
+		AmazonSQS sqs = AmazonSQSClientBuilder.standard().withRegion(clientRegion).build();
+		AmazonS3 s3Client = AmazonS3ClientBuilder.standard().withRegion(clientRegion).build();
+		
+		
+		final File folder = new File("/home/pi/darknet/videos");
+		System.out.println("CPU Util" + PiUtil());
+		ArrayList<Instance> all_instances = getInstanceIds(ec2) ; // returns all instances created
+
+		for (final File fileEntry : folder.listFiles()) {
+			
+			String filename = fileEntry.getName(); //The name of the video file
+			
+			uploadInput(s3Client,inputBucketName, filename,fileEntry) ; //uploads file to input bucket
+
+			if(PiUtil() > 50.0){
+				System.out.println("CPU Util is is big") ;
+				for(Instance instance: all_instances) {
+					String state = instance.getState().getName() ;
+					System.out.println(state) ;
+					
+					if(state.equals("running")) {
+						System.out.println("sending message...") ;
+						sendMessage(sqs, filename, instance.getInstanceId(), myQueueUrl) ; // sends message to sqs
+						//delete file
+						fileEntry.delete() ;
+						System.out.println("message sent.") ;
+						break ;
+					}
+					else if (state.equals("stopped")) {
+						// Starts up an instance with instance id
+						startInstance(ec2, instance.getInstanceId()) ; 
+						}
+
+					}
+				}else {
+					System.out.println("detecting object...");
+					upload(s3Client, outputBucketName, filename, performObjectDetection(filename)) ; //uploads prediction to output bucket
+					System.out.println("Done.") ;
+					//delete file
+					fileEntry.delete() ;
+		
+					}//else
+			}// for
+		
+	}// main
 	
 	//function Uploads to outputBucket
 	private static void upload(AmazonS3 s3Client, String bucketName, String keyName, String prediction){
@@ -171,61 +227,3 @@ public class PIController {
 		}
 		return resultat;
 	}
-	
-	//main function runs the application
-	public static void main(String[] args) throws IOException {
-		// Set required parameters
-		Regions clientRegion = Regions.US_EAST_1;
-		String inputBucketName = "cse546input";
-		String outputBucketName = "cse546output";
-		String myQueueUrl = "https://sqs.us-east-1.amazonaws.com/603754723521/Test";
-		
-		final AmazonEC2 ec2 = AmazonEC2ClientBuilder.standard().withRegion(clientRegion).build();
-		// Create SQS and S3 Client
-		AmazonSQS sqs = AmazonSQSClientBuilder.standard().withRegion(clientRegion).build();
-		AmazonS3 s3Client = AmazonS3ClientBuilder.standard().withRegion(clientRegion).build();
-		
-		
-		final File folder = new File("/home/pi/darknet/videos");
-		
-		for (final File fileEntry : folder.listFiles()) {
-			
-			String filename = fileEntry.getName(); //The name of the video file
-			
-			uploadInput(s3Client,inputBucketName, filename,fileEntry) ; //uploads file to input bucket
-			
-			if(PiUtil() > 50.0){
-				System.out.println("CPU Util is is big") ;
-				ArrayList<Instance> all_instances = getInstanceIds(ec2) ; // returns all instances created
-				for(Instance instance: all_instances) {
-					String state = instance.getState().getName() ;
-					System.out.println(state) ;
-					
-					if(state.equals("running")) {
-						System.out.println("sending message...") ;
-						sendMessage(sqs, filename, instance.getInstanceId(), myQueueUrl) ; // sends message to sqs
-						//delete file
-						fileEntry.delete() ;
-						System.out.println("message sent.") ;
-						break ;
-					}
-					else if (state.equals("stopped")) {
-						// Starts up an instance with instance id
-						startInstance(ec2, instance.getInstanceId()) ; 
-						}
-
-					}
-				}else {
-					System.out.println("detecting object...");
-					upload(s3Client, outputBucketName, filename, performObjectDetection(filename)) ; //uploads prediction to output bucket
-					System.out.println("Done.") ;
-					//delete file
-					fileEntry.delete() ;
-		
-					}//else
-			}// for
-		
-	}// main
-	
-
-}
