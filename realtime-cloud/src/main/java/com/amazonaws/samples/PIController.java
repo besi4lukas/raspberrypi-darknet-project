@@ -1,0 +1,231 @@
+package com.amazonaws.samples;
+
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStreamReader;
+//import java.lang.management.ManagementFactory;
+import java.util.ArrayList;
+import java.util.Arrays;
+
+//import javax.management.MBeanServerConnection;
+//import com.sun.management.OperatingSystemMXBean ;
+import com.amazonaws.regions.Regions;
+import com.amazonaws.services.ec2.AmazonEC2;
+import com.amazonaws.services.ec2.AmazonEC2ClientBuilder;
+import com.amazonaws.services.ec2.model.DescribeInstancesRequest;
+import com.amazonaws.services.ec2.model.DescribeInstancesResult;
+import com.amazonaws.services.ec2.model.Instance;
+import com.amazonaws.services.elasticloadbalancing.model.InstanceState ;
+import com.amazonaws.services.ec2.model.Reservation;
+import com.amazonaws.services.ec2.model.StartInstancesRequest;
+import com.amazonaws.services.s3.model.PutObjectRequest ;
+import com.amazonaws.services.s3.AmazonS3;
+import com.amazonaws.services.s3.AmazonS3ClientBuilder;
+import com.amazonaws.services.sqs.AmazonSQS;
+import com.amazonaws.services.sqs.AmazonSQSClientBuilder;
+import com.amazonaws.services.sqs.model.SendMessageRequest;
+
+import java.lang.management.ManagementFactory;
+import java.lang.management.OperatingSystemMXBean;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+
+
+
+
+
+public class PIController {
+	
+	//function Uploads to outputBucket
+	private static void upload(AmazonS3 s3Client, String bucketName, String keyName, String prediction){
+		System.out.println(bucketName + " " + keyName + " " + prediction);
+		String result = "{ " + keyName + ", " + prediction + " }" ;
+		s3Client.putObject(bucketName, result, keyName);
+		System.out.println("Uploaded Result");
+		
+	}
+	
+	//function uploads to inputBucket 
+	private static void uploadInput(AmazonS3 s3Client, String bucketName, String keyName, File inputFile){
+		PutObjectRequest request = new PutObjectRequest(bucketName, keyName, inputFile);
+		s3Client.putObject(request);
+		System.out.println("Uploaded Video File");
+		
+	}
+	
+//	public static double getInstanceUtil(AmazonEC2 ec2, String instanceID) {
+//		double instanceUtil = 0.0 ;
+//		if(getState(instanceID) == "running") {
+//			
+//			//
+//		}else {
+//			switchInstance(ec2, instanceID) ;
+//		}
+//		
+//		return instanceUtil ;
+//	}
+//	
+	
+	//function returns the CPU Utilization of the Pi 
+	private static double PiUtil() throws IOException {
+		
+		ArrayList<String> calcResult = new ArrayList<String>(8) ;
+		 OperatingSystemMXBean operatingSystemMXBean = ManagementFactory.getOperatingSystemMXBean();
+		  for (Method method : operatingSystemMXBean.getClass().getDeclaredMethods()) {
+		    method.setAccessible(true);
+		    if (method.getName().startsWith("get") && Modifier.isPublic(method.getModifiers())) {
+		            Object value;
+		        try {
+		            value = method.invoke(operatingSystemMXBean);
+		        } catch (Exception e) {
+		            value = e;
+		        } // try
+		        String result =  "" + value ;
+		        calcResult.add(result) ;
+		        //System.out.println(method.getName() + " = " + value);
+		    } // if
+		  } // for
+		  
+		 double percent = Double.valueOf(calcResult.get(5)) ;
+		 return percent * 100 ;
+		
+	}
+	
+	//function returns an array of instance Ids
+	private static ArrayList<Instance> getInstanceIds(AmazonEC2 ec2){
+		ArrayList<Instance> arrInstances = new ArrayList<Instance>() ; // array holds all the instances 
+		boolean done = false;
+		DescribeInstancesRequest request = new DescribeInstancesRequest();
+		
+		while(!done) {
+		    DescribeInstancesResult response = ec2.describeInstances(request);
+
+		    for(Reservation reservation : response.getReservations()) {
+		        for(Instance instance : reservation.getInstances()) {
+		        	arrInstances.add(instance) ; 
+		        	}
+		        }
+
+		    request.setNextToken(response.getNextToken());
+
+		    if(response.getNextToken() == null) {
+		        done = true;
+		    }
+		}
+		return arrInstances ;
+	}
+	
+	//function starts up an instance
+	private static void startInstance(AmazonEC2 ec2, String Id){
+        StartInstancesRequest startInstancesRequest = new StartInstancesRequest().withInstanceIds(Id);
+        ec2.startInstances(startInstancesRequest);
+	}
+		
+	
+	//function sends a message to the sqs
+	private static void sendMessage(AmazonSQS sqs, String filename, String id, String queueUrl) {
+		String message = filename + ":" + id ;
+		SendMessageRequest send_msg_request = new SendMessageRequest()
+		        .withQueueUrl(queueUrl)
+		        .withMessageBody(message)
+		        .withDelaySeconds(0);
+		sqs.sendMessage(send_msg_request);
+		
+	}
+	
+	
+	//function runs darknet and performs object detection 
+	private static String performObjectDetection(String keyName) {
+		String[] bashScript = new String[] { "./darknet", "detector", "demo", "cfg/coco.data", "cfg/yolov3-tiny.cfg",
+				"yolov3-tiny.weights", keyName };
+
+		System.out.println("Running Command $ " + Arrays.toString(bashScript));
+		String prediction = executeCommand(bashScript);
+		System.out.println("Done running");
+		return prediction;
+	}
+	
+	//function executes command on the terminal 
+	public static String executeCommand(String[] command) {
+		String line;
+		String resultat = "";
+		try {
+			ProcessBuilder builder;
+
+			builder = new ProcessBuilder(command);
+
+			builder.redirectErrorStream(true);
+			Process p = builder.start();
+			BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()));
+			while (true) {
+				line = r.readLine();
+				if (line == null) {
+					break;
+				}
+				resultat = line; // final prediction
+				System.out.println(line);
+			}
+		} catch (IOException e) {
+			System.out.println("Exception = " + e.getMessage());
+		}
+		return resultat;
+	}
+	
+	//main function runs the application
+	public static void main(String[] args) throws IOException {
+		// Set required parameters
+		Regions clientRegion = Regions.US_EAST_1;
+		String inputBucketName = "cse546input";
+		String outputBucketName = "cse546output";
+		String myQueueUrl = "https://sqs.us-east-1.amazonaws.com/603754723521/Test";
+		
+		final AmazonEC2 ec2 = AmazonEC2ClientBuilder.standard().withRegion(clientRegion).build();
+		// Create SQS and S3 Client
+		AmazonSQS sqs = AmazonSQSClientBuilder.standard().withRegion(clientRegion).build();
+		AmazonS3 s3Client = AmazonS3ClientBuilder.standard().withRegion(clientRegion).build();
+		
+		
+		final File folder = new File("/home/pi/darknet/videos");
+		
+		for (final File fileEntry : folder.listFiles()) {
+			
+			String filename = fileEntry.getName(); //The name of the video file
+			
+			uploadInput(s3Client,inputBucketName, filename,fileEntry) ; //uploads file to input bucket
+			
+			if(PiUtil() > 50.0){
+				System.out.println("CPU Util is is big") ;
+				ArrayList<Instance> all_instances = getInstanceIds(ec2) ; // returns all instances created
+				for(Instance instance: all_instances) {
+					String state = instance.getState().getName() ;
+					System.out.println(state) ;
+					
+					if(state.equals("running")) {
+						System.out.println("sending message...") ;
+						sendMessage(sqs, filename, instance.getInstanceId(), myQueueUrl) ; // sends message to sqs
+						//delete file
+						fileEntry.delete() ;
+						System.out.println("message sent.") ;
+						break ;
+					}
+					else if (state.equals("stopped")) {
+						// Starts up an instance with instance id
+						startInstance(ec2, instance.getInstanceId()) ; 
+						}
+
+					}
+				}else {
+					System.out.println("detecting object...");
+					upload(s3Client, outputBucketName, filename, performObjectDetection(filename)) ; //uploads prediction to output bucket
+					System.out.println("Done.") ;
+					//delete file
+					fileEntry.delete() ;
+		
+					}//else
+			}// for
+		
+	}// main
+	
+
+}
