@@ -54,7 +54,9 @@ public class PIController {
 		final File folder = new File("/home/pi/darknet/videos");
 		System.out.println("CPU Util" + PiUtil());
 		ArrayList<Instance> all_instances = getInstanceIds(ec2) ; // returns all instances created
-
+		
+		int index = 0 ;
+		
 		for (final File fileEntry : folder.listFiles()) {
 			
 			String filename = fileEntry.getName(); //The name of the video file
@@ -63,7 +65,9 @@ public class PIController {
 
 			if(PiUtil() > 50.0){
 				System.out.println("CPU Util is is big") ;
-				for(Instance instance: all_instances) {
+				//for(Instance instance: all_instances) {
+				System.out.println("Using Instance at index :" + index) ;
+				Instance instance = all_instances.get(index) ;
 					String state = instance.getState().getName() ;
 					System.out.println(state) ;
 					
@@ -73,6 +77,7 @@ public class PIController {
 						//delete file
 						fileEntry.delete() ;
 						System.out.println("message sent.") ;
+						index += 1 ;
 						break ;
 					}
 					else if (state.equals("stopped")) {
@@ -80,7 +85,7 @@ public class PIController {
 						startInstance(ec2, instance.getInstanceId()) ; 
 						}
 
-					}
+					//}
 				}else {
 					System.out.println("detecting object...");
 					upload(s3Client, outputBucketName, filename, performObjectDetection(filename)) ; //uploads prediction to output bucket
