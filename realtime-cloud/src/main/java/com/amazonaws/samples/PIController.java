@@ -35,8 +35,24 @@ import java.lang.reflect.Modifier;
 
 
 
-public class PIController {
+public class PIController implements Runnable {
+
+	private AmazonS3 s3 ;
+	private String output = null;
+	private String filename = null;
 	
+	public PIController(AmazonS3 s3Client, String bucketName, String keyName) {
+		this.s3 =  s3Client ;
+		this.output = bucketName ;
+		this.filename = keyName ;
+	   
+   }
+   
+   public void run() {
+	   upload(this.s3, this.output, this.filename, performObjectDetection(this.filename)) ;
+	}
+
+
 	//main function runs the application
 	public static void main(String[] args) throws IOException {
 		// Set required parameters
@@ -54,6 +70,7 @@ public class PIController {
 		final File folder = new File("/home/pi/darknet/videos");
 		System.out.println("CPU Util" + PiUtil());
 		ArrayList<Instance> all_instances = getInstanceIds(ec2) ; // returns all instances created
+		int index = 0 ;
 
 		for (final File fileEntry : folder.listFiles()) {
 			
@@ -63,7 +80,9 @@ public class PIController {
 
 			if(PiUtil() > 50.0){
 				System.out.println("CPU Util is is big") ;
-				for(Instance instance: all_instances) {
+				//for(Instance instance: all_instances) {
+				System.out.println("Using Instance at index :" + index) ;
+					Instance instance = all_instances.get(index) ;
 					String state = instance.getState().getName() ;
 					System.out.println(state) ;
 					
@@ -73,6 +92,7 @@ public class PIController {
 						//delete file
 						fileEntry.delete() ;
 						System.out.println("message sent.") ;
+						index += 1 ;
 						break ;
 					}
 					else if (state.equals("stopped")) {
@@ -80,11 +100,12 @@ public class PIController {
 						startInstance(ec2, instance.getInstanceId()) ; 
 						}
 
-					}
+					//}
 				}else {
 					System.out.println("detecting object...");
-					upload(s3Client, outputBucketName, filename, performObjectDetection(filename)) ; //uploads prediction to output bucket
-					System.out.println("Done.") ;
+					System.out.println("Starting Thread...");
+					Thread pi = new Thread( new PIController(s3Client, outputBucketName, filename)) ;
+					pi.start();
 					//delete file
 					fileEntry.delete() ;
 		
