@@ -1,12 +1,17 @@
 package com.amazonaws.process;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.UnsupportedEncodingException;
 //import java.lang.management.ManagementFactory;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.stream.Collectors;
 
 //import javax.management.MBeanServerConnection;
 //import com.sun.management.OperatingSystemMXBean ;
@@ -19,6 +24,7 @@ import com.amazonaws.services.ec2.model.Instance;
 import com.amazonaws.services.elasticloadbalancing.model.InstanceState ;
 import com.amazonaws.services.ec2.model.Reservation;
 import com.amazonaws.services.ec2.model.StartInstancesRequest;
+import com.amazonaws.services.s3.model.ObjectMetadata;
 import com.amazonaws.services.s3.model.PutObjectRequest ;
 import com.amazonaws.services.s3.AmazonS3;
 import com.amazonaws.services.s3.AmazonS3ClientBuilder;
@@ -109,12 +115,17 @@ public class PIController {
 	}// main
 	
 	//function Uploads to outputBucket
-	private static void upload(AmazonS3 s3Client, String bucketName, String keyName, String prediction){
-		System.out.println(bucketName + " " + keyName + " " + prediction);
-		String result = "{ " + keyName + ", " + prediction + " }" ;
-		s3Client.putObject(bucketName, result, keyName);
-		System.out.println("Uploaded Result");
+	private static void upload(AmazonS3 s3Client, String bucketName, String keyName, String prediction) {
+		// create meta-data for your folder and set content-length to 0
+		ObjectMetadata metadata = new ObjectMetadata();
+		metadata.setContentLength(0);
 		
+		// create empty content
+		InputStream emptyContent = new ByteArrayInputStream(new byte[0]);
+		
+		PutObjectRequest request = new PutObjectRequest(bucketName, "{ " + keyName + ", " + prediction + " }", emptyContent, metadata);
+		s3Client.putObject(request);
+		System.out.println("Uploaded Result");
 	}
 	
 	//function uploads to inputBucket 
@@ -220,7 +231,9 @@ public class PIController {
 	//function executes command on the terminal 
 	public static String executeCommand(String[] command) {
 		String line;
-		String resultat = "";
+		//results in hashmap
+		HashMap<String, String> map 
+        = new HashMap<>(); 
 		try {
 			ProcessBuilder builder;
 
@@ -229,18 +242,35 @@ public class PIController {
 			builder.redirectErrorStream(true);
 			Process p = builder.start();
 			BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()));
+		
+			
 			while (true) {
 				line = r.readLine();
 				if (line == null) {
 					break;
 				}
-				resultat = line; // final prediction
+				if(line.contains("%") && line.split(":").length > 1) {
+					String pred = line.split(":")[0];
+					String accuracy = line.split(":")[1];
+					map.put(pred, accuracy); 
+				}
 				System.out.println(line);
 			}
 		} catch (IOException e) {
 			System.out.println("Exception = " + e.getMessage());
 		}
-		return resultat;
+		String result = map.entrySet().stream()
+				   .map(e -> encode(e.getKey()))
+				   .collect(Collectors.joining(", "));
+		return result;
+	}
+	
+	public static String encode(String s){
+	    try{
+	        return java.net.URLEncoder.encode(s, "UTF-8");
+	    } catch(UnsupportedEncodingException e){
+	        throw new IllegalStateException(e);
+	    }
 	}
 	
 }
