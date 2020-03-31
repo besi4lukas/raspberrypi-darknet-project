@@ -236,7 +236,7 @@ public class PIController implements Runnable {
 	//function runs darknet and performs object detection 
 	private static String performObjectDetection(String keyName) {
 		String[] bashScript = new String[] { "./darknet", "detector", "demo", "cfg/coco.data", "cfg/yolov3-tiny.cfg",
-				"yolov3-tiny.weights", keyName };
+				"yolov3-tiny.weights", "videos/"+keyName };
 
 		System.out.println("Running Command $ " + Arrays.toString(bashScript));
 		String prediction = executeCommand(bashScript);
