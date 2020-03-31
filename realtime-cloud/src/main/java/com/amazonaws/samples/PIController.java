@@ -1,12 +1,17 @@
 package com.amazonaws.process;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.UnsupportedEncodingException;
 //import java.lang.management.ManagementFactory;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.stream.Collectors;
 
 //import javax.management.MBeanServerConnection;
 //import com.sun.management.OperatingSystemMXBean ;
@@ -19,6 +24,7 @@ import com.amazonaws.services.ec2.model.Instance;
 import com.amazonaws.services.elasticloadbalancing.model.InstanceState ;
 import com.amazonaws.services.ec2.model.Reservation;
 import com.amazonaws.services.ec2.model.StartInstancesRequest;
+import com.amazonaws.services.s3.model.ObjectMetadata;
 import com.amazonaws.services.s3.model.PutObjectRequest ;
 import com.amazonaws.services.s3.AmazonS3;
 import com.amazonaws.services.s3.AmazonS3ClientBuilder;
@@ -68,21 +74,27 @@ public class PIController implements Runnable {
 		
 		
 		final File folder = new File("/home/pi/darknet/videos");
-		System.out.println("CPU Util" + PiUtil());
 		ArrayList<Instance> all_instances = getInstanceIds(ec2) ; // returns all instances created
+		
 		int index = 0 ;
 
+	    Double piUtil = PiUtil();
+	    piUtil = (double)Math.round(piUtil * 10d) / 10d;
+		System.out.println("CPU Util " + piUtil);
+
 		for (final File fileEntry : folder.listFiles()) {
-			
+			if(index == all_instances.size()) {
+				index = 0;
+			}
 			String filename = fileEntry.getName(); //The name of the video file
 			
 			uploadInput(s3Client,inputBucketName, filename,fileEntry) ; //uploads file to input bucket
-
-			if(PiUtil() > 50.0){
+			System.out.println("CPU Util " + piUtil);
+			if(piUtil > 99.0){
 				System.out.println("CPU Util is is big") ;
 				//for(Instance instance: all_instances) {
 				System.out.println("Using Instance at index :" + index) ;
-					Instance instance = all_instances.get(index) ;
+				Instance instance = all_instances.get(index) ;
 					String state = instance.getState().getName() ;
 					System.out.println(state) ;
 					
@@ -93,16 +105,20 @@ public class PIController implements Runnable {
 						fileEntry.delete() ;
 						System.out.println("message sent.") ;
 						index += 1 ;
-						break ;
 					}
 					else if (state.equals("stopped")) {
 						// Starts up an instance with instance id
-						startInstance(ec2, instance.getInstanceId()) ; 
+						startInstance(ec2, instance.getInstanceId()) ;
+						System.out.println("sending message...") ;
+						sendMessage(sqs, filename, instance.getInstanceId(), myQueueUrl) ; // sends message to sqs
+						//delete file
+						fileEntry.delete() ;
+						System.out.println("message sent.") ;
+						index += 1 ;
 						}
 
 					//}
 				}else {
-					System.out.println("detecting object...");
 					System.out.println("Starting Thread...");
 					Thread pi = new Thread( new PIController(s3Client, outputBucketName, filename)) ;
 					pi.start();
@@ -115,12 +131,17 @@ public class PIController implements Runnable {
 	}// main
 	
 	//function Uploads to outputBucket
-	private static void upload(AmazonS3 s3Client, String bucketName, String keyName, String prediction){
-		System.out.println(bucketName + " " + keyName + " " + prediction);
-		String result = "{ " + keyName + ", " + prediction + " }" ;
-		s3Client.putObject(bucketName, result, keyName);
-		System.out.println("Uploaded Result");
+	private static void upload(AmazonS3 s3Client, String bucketName, String keyName, String prediction) {
+		// create meta-data for your folder and set content-length to 0
+		ObjectMetadata metadata = new ObjectMetadata();
+		metadata.setContentLength(0);
 		
+		// create empty content
+		InputStream emptyContent = new ByteArrayInputStream(new byte[0]);
+		
+		PutObjectRequest request = new PutObjectRequest(bucketName, "{ " + keyName + ", " + prediction + " }", emptyContent, metadata);
+		s3Client.putObject(request);
+		System.out.println("Uploaded Result");
 	}
 	
 	//function uploads to inputBucket 
@@ -147,7 +168,7 @@ public class PIController implements Runnable {
 	//function returns the CPU Utilization of the Pi 
 	private static double PiUtil() throws IOException {
 		
-		ArrayList<String> calcResult = new ArrayList<String>(8) ;
+		 double result = 0.0;
 		 OperatingSystemMXBean operatingSystemMXBean = ManagementFactory.getOperatingSystemMXBean();
 		  for (Method method : operatingSystemMXBean.getClass().getDeclaredMethods()) {
 		    method.setAccessible(true);
@@ -158,14 +179,14 @@ public class PIController implements Runnable {
 		        } catch (Exception e) {
 		            value = e;
 		        } // try
-		        String result =  "" + value ;
-		        calcResult.add(result) ;
-		        //System.out.println(method.getName() + " = " + value);
+		        if(method.getName().toString().equals("getSystemCpuLoad")) {
+		        	System.out.println(method.getName() + " = " + value);
+		        	result = (double) value;
+		        }
+		       // System.out.println(method.getName() + " = " + value);
 		    } // if
 		  } // for
-		  
-		 double percent = Double.valueOf(calcResult.get(5)) ;
-		 return percent * 100 ;
+		 return result * 100 ;
 		
 	}
 	
@@ -226,7 +247,9 @@ public class PIController implements Runnable {
 	//function executes command on the terminal 
 	public static String executeCommand(String[] command) {
 		String line;
-		String resultat = "";
+		//results in hashmap
+		HashMap<String, String> map 
+        = new HashMap<>(); 
 		try {
 			ProcessBuilder builder;
 
@@ -235,16 +258,35 @@ public class PIController implements Runnable {
 			builder.redirectErrorStream(true);
 			Process p = builder.start();
 			BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()));
+		
+			
 			while (true) {
 				line = r.readLine();
 				if (line == null) {
 					break;
 				}
-				resultat = line; // final prediction
+				if(line.contains("%") && line.split(":").length > 1) {
+					String pred = line.split(":")[0];
+					String accuracy = line.split(":")[1];
+					map.put(pred, accuracy); 
+				}
 				System.out.println(line);
 			}
 		} catch (IOException e) {
 			System.out.println("Exception = " + e.getMessage());
 		}
-		return resultat;
+		String result = map.entrySet().stream()
+				   .map(e -> encode(e.getKey()))
+				   .collect(Collectors.joining(", "));
+		return result;
 	}
+	
+	public static String encode(String s){
+	    try{
+	        return java.net.URLEncoder.encode(s, "UTF-8");
+	    } catch(UnsupportedEncodingException e){
+	        throw new IllegalStateException(e);
+	    }
+	}
+	
+}
