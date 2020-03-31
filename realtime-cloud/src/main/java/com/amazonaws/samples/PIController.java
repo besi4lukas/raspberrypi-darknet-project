@@ -52,18 +52,23 @@ public class PIController {
 		
 		
 		final File folder = new File("/home/pi/darknet/videos");
-		System.out.println("CPU Util" + PiUtil());
 		ArrayList<Instance> all_instances = getInstanceIds(ec2) ; // returns all instances created
 		
 		int index = 0 ;
-		
+
+	    Double piUtil = PiUtil();
+	    piUtil = (double)Math.round(piUtil * 10d) / 10d;
+		System.out.println("CPU Util " + piUtil);
+
 		for (final File fileEntry : folder.listFiles()) {
-			
+			if(index == all_instances.size()) {
+				index = 0;
+			}
 			String filename = fileEntry.getName(); //The name of the video file
 			
 			uploadInput(s3Client,inputBucketName, filename,fileEntry) ; //uploads file to input bucket
-
-			if(PiUtil() > 50.0){
+			System.out.println("CPU Util " + piUtil);
+			if(piUtil > 99.0){
 				System.out.println("CPU Util is is big") ;
 				//for(Instance instance: all_instances) {
 				System.out.println("Using Instance at index :" + index) ;
@@ -78,11 +83,16 @@ public class PIController {
 						fileEntry.delete() ;
 						System.out.println("message sent.") ;
 						index += 1 ;
-						break ;
 					}
 					else if (state.equals("stopped")) {
 						// Starts up an instance with instance id
-						startInstance(ec2, instance.getInstanceId()) ; 
+						startInstance(ec2, instance.getInstanceId()) ;
+						System.out.println("sending message...") ;
+						sendMessage(sqs, filename, instance.getInstanceId(), myQueueUrl) ; // sends message to sqs
+						//delete file
+						fileEntry.delete() ;
+						System.out.println("message sent.") ;
+						index += 1 ;
 						}
 
 					//}
@@ -131,7 +141,7 @@ public class PIController {
 	//function returns the CPU Utilization of the Pi 
 	private static double PiUtil() throws IOException {
 		
-		ArrayList<String> calcResult = new ArrayList<String>(8) ;
+		 double result = 0.0;
 		 OperatingSystemMXBean operatingSystemMXBean = ManagementFactory.getOperatingSystemMXBean();
 		  for (Method method : operatingSystemMXBean.getClass().getDeclaredMethods()) {
 		    method.setAccessible(true);
@@ -142,14 +152,14 @@ public class PIController {
 		        } catch (Exception e) {
 		            value = e;
 		        } // try
-		        String result =  "" + value ;
-		        calcResult.add(result) ;
-		        //System.out.println(method.getName() + " = " + value);
+		        if(method.getName().toString().equals("getSystemCpuLoad")) {
+		        	System.out.println(method.getName() + " = " + value);
+		        	result = (double) value;
+		        }
+		       // System.out.println(method.getName() + " = " + value);
 		    } // if
 		  } // for
-		  
-		 double percent = Double.valueOf(calcResult.get(5)) ;
-		 return percent * 100 ;
+		 return result * 100 ;
 		
 	}
 	
@@ -232,3 +242,5 @@ public class PIController {
 		}
 		return resultat;
 	}
+	
+}
